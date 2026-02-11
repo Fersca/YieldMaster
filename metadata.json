@@ -1,0 +1,7 @@
+{
+  "name": "BankYield Master",
+  "description": "A comprehensive mobile-first finance tool to track balances in ARS/USD and compare annual bank yields using Google Sheets as a persistent database.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
