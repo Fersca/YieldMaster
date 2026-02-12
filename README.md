@@ -20,6 +20,10 @@ YieldMaster es una aplicación móvil-first diseñada para usuarios en Argentina
 - **Cloud**: Google Sheets API & Google Drive API.
 - **Reportes**: jsPDF + html2canvas.
 
+## 🛡️ Seguridad (¡Importante!)
+
+Como esta es una aplicación Client-Side, es vital restringir tu API Key de Google para evitar usos no autorizados. Consulta nuestra [Guía de Seguridad](./SECURITY.md) para configurar las restricciones de dominio y de API correctamente.
+
 ## 🚀 Configuración Local
 
 1.  **Clonar y configurar**:

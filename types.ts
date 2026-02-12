@@ -4,6 +4,15 @@ export interface BankSource {
   uri: string;
 }
 
+export interface BankPromotion {
+  bankName: string;
+  benefits: {
+    category: string; // e.g., "Supermercados", "Combustible"
+    description: string;
+    discount: string; // e.g., "30%"
+  }[];
+}
+
 export interface Bank {
   id: string;
   name: string;

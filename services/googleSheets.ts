@@ -2,6 +2,7 @@
 import { Bank } from '../types';
 
 const SPREADSHEET_NAME = "BankYield_Data";
+const CAPTURES_FOLDER_NAME = "BankYield_Captures";
 const BANKS_SHEET = "Bancos";
 const BALANCES_SHEET = "Saldos";
 
@@ -103,60 +104,98 @@ export async function getOrCreateSpreadsheet(accessToken: string): Promise<strin
         headers: { Authorization: `Bearer ${accessToken}` }
     });
     
-    if (!searchRes.ok) {
-      await handleResponseError(searchRes, "Error buscando en Drive");
-    }
+    if (!searchRes.ok) await handleResponseError(searchRes, "Error buscando en Drive");
     
     const searchData = await searchRes.json();
-    let spreadsheetId = "";
-
     if (searchData.files && searchData.files.length > 0) {
-        spreadsheetId = searchData.files[0].id;
-    } else {
-        const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
-            method: 'POST',
-            headers: { 
-                Authorization: `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                properties: { title: SPREADSHEET_NAME },
-                sheets: [
-                  { properties: { title: BANKS_SHEET } },
-                  { properties: { title: BALANCES_SHEET } }
-                ]
-            })
-        });
-        
-        if (!createRes.ok) {
-          await handleResponseError(createRes, "Error creando Hoja");
-        }
-        
-        const createData = await createRes.json();
-        spreadsheetId = createData.spreadsheetId;
-        return spreadsheetId;
+        return searchData.files[0].id;
     }
 
-    const checkSheetsRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`, {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    const sheetInfo = await checkSheetsRes.json();
-    const existingTitles = sheetInfo.sheets.map((s: any) => s.properties.title);
-
-    const adds = [];
-    if (!existingTitles.includes(BANKS_SHEET)) adds.push({ addSheet: { properties: { title: BANKS_SHEET } } });
-    if (!existingTitles.includes(BALANCES_SHEET)) adds.push({ addSheet: { properties: { title: BALANCES_SHEET } } });
-
-    if (adds.length > 0) {
-      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
+    const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
         method: 'POST',
         headers: { 
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ requests: adds })
-      });
-    }
+        body: JSON.stringify({
+            properties: { title: SPREADSHEET_NAME },
+            sheets: [
+              { properties: { title: BANKS_SHEET } },
+              { properties: { title: BALANCES_SHEET } }
+            ]
+        })
+    });
+    
+    if (!createRes.ok) await handleResponseError(createRes, "Error creando Hoja");
+    const createData = await createRes.json();
+    return createData.spreadsheetId;
+}
 
-    return spreadsheetId;
+/** 
+ * Drive Folder and File Management 
+ */
+
+export async function getOrCreateFolder(accessToken: string): Promise<string> {
+  const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${CAPTURES_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+
+  if (!searchRes.ok) await handleResponseError(searchRes, "Error buscando carpeta en Drive");
+  
+  const searchData = await searchRes.json();
+  if (searchData.files && searchData.files.length > 0) {
+    return searchData.files[0].id;
+  }
+
+  const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: { 
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      name: CAPTURES_FOLDER_NAME,
+      mimeType: 'application/vnd.google-apps.folder'
+    })
+  });
+
+  if (!createRes.ok) await handleResponseError(createRes, "Error creando carpeta");
+  const createData = await createRes.json();
+  return createData.id;
+}
+
+export async function uploadImageToDrive(accessToken: string, folderId: string, base64Data: string, fileName: string) {
+  const boundary = 'foo_bar_baz';
+  const delimiter = `\r\n--${boundary}\r\n`;
+  const closeDelimiter = `\r\n--${boundary}--`;
+
+  const metadata = {
+    name: fileName,
+    parents: [folderId],
+    mimeType: 'image/jpeg'
+  };
+
+  const multipartBody = 
+    delimiter +
+    'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+    JSON.stringify(metadata) +
+    delimiter +
+    'Content-Type: image/jpeg\r\n' +
+    'Content-Transfer-Encoding: base64\r\n\r\n' +
+    base64Data +
+    closeDelimiter;
+
+  const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': `multipart/related; boundary=${boundary}`
+    },
+    body: multipartBody
+  });
+
+  if (!response.ok) {
+    await handleResponseError(response, "Error subiendo imagen a Drive");
+  }
+  return await response.json();
 }
