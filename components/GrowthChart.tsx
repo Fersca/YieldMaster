@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   AreaChart, 
   Area, 
@@ -11,7 +11,7 @@ import {
   Legend
 } from 'recharts';
 import { Currency } from '../types';
-import { FileDown, RefreshCw } from 'lucide-react';
+import { FileDown, RefreshCw, CalendarPlus, Check, Calendar as CalendarIcon, X } from 'lucide-react';
 
 interface GrowthChartDataPoint {
   monthName: string;
@@ -28,6 +28,8 @@ interface GrowthChartProps {
   currentBankName?: string;
   onDownloadPdf?: () => void;
   isDownloading?: boolean;
+  onAddCalendarEvent?: (date: string) => Promise<void>;
+  isAddingEvent?: boolean;
 }
 
 export const GrowthChart: React.FC<GrowthChartProps> = ({ 
@@ -38,29 +40,57 @@ export const GrowthChart: React.FC<GrowthChartProps> = ({
   potentialBankName = "Banco Seleccionado",
   currentBankName = "Mi Banco",
   onDownloadPdf,
-  isDownloading = false
+  isDownloading = false,
+  onAddCalendarEvent,
+  isAddingEvent = false
 }) => {
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(
+    new Date(new Date().setDate(new Date().getDate() + 30)).toISOString().split('T')[0]
+  );
+  const [eventCreated, setEventCreated] = useState(false);
+
   const hasComparison = comparisonTotalGain !== undefined;
   const difference = hasComparison ? totalGain - (comparisonTotalGain || 0) : 0;
 
+  const handleCalendarAction = async () => {
+    if (onAddCalendarEvent) {
+      await onAddCalendarEvent(selectedDate);
+      setEventCreated(true);
+      setShowDatePicker(false);
+      setTimeout(() => setEventCreated(false), 3000);
+    }
+  };
+
   return (
-    <div className="bg-white rounded-3xl shadow-lg p-6 border border-slate-100">
+    <div className="bg-white rounded-3xl shadow-lg p-6 border border-slate-100 relative">
       <div className="flex flex-col mb-4 gap-2">
         <div className="flex justify-between items-start">
           <div className="flex-1">
             <div className="flex items-center gap-2">
               <h3 className="font-bold text-slate-800 text-base">Proyección a 12 Meses</h3>
-              {onDownloadPdf && (
-                <button 
-                  data-html2canvas-ignore="true"
-                  onClick={(e) => { e.stopPropagation(); onDownloadPdf(); }}
-                  disabled={isDownloading}
-                  className={`p-1.5 rounded-lg transition-colors ${isDownloading ? 'text-slate-300' : 'text-emerald-500 hover:bg-emerald-50'}`}
-                  title="Descargar reporte PDF"
-                >
-                  {isDownloading ? <RefreshCw size={16} className="animate-spin" /> : <FileDown size={16} />}
-                </button>
-              )}
+              <div className="flex gap-1" data-html2canvas-ignore="true">
+                {onDownloadPdf && (
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); onDownloadPdf(); }}
+                    disabled={isDownloading}
+                    className={`p-1.5 rounded-lg transition-colors ${isDownloading ? 'text-slate-300' : 'text-emerald-500 hover:bg-emerald-50'}`}
+                    title="Descargar reporte PDF"
+                  >
+                    {isDownloading ? <RefreshCw size={16} className="animate-spin" /> : <FileDown size={16} />}
+                  </button>
+                )}
+                {onAddCalendarEvent && (
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); setShowDatePicker(true); }}
+                    disabled={isAddingEvent || eventCreated}
+                    className={`p-1.5 rounded-lg transition-all ${eventCreated ? 'bg-emerald-100 text-emerald-600' : 'text-amber-500 hover:bg-amber-50'}`}
+                    title="Agendar vencimiento"
+                  >
+                    {eventCreated ? <Check size={16} /> : isAddingEvent ? <RefreshCw size={16} className="animate-spin" /> : <CalendarPlus size={16} />}
+                  </button>
+                )}
+              </div>
             </div>
             <p className="text-slate-500 text-[10px] leading-tight">Crecimiento estimado mensual acumulado</p>
           </div>
@@ -77,6 +107,29 @@ export const GrowthChart: React.FC<GrowthChartProps> = ({
           </div>
         </div>
       </div>
+
+      {showDatePicker && (
+        <div className="absolute inset-0 bg-white/95 backdrop-blur-sm z-20 rounded-3xl p-6 flex flex-col justify-center animate-in fade-in zoom-in duration-200">
+          <div className="flex justify-between items-center mb-4">
+            <h4 className="text-xs font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+              <CalendarIcon size={14} className="text-amber-500" /> Fecha de Vencimiento
+            </h4>
+            <button onClick={() => setShowDatePicker(false)} className="p-1 text-slate-400 hover:text-slate-600"><X size={16} /></button>
+          </div>
+          <input 
+            type="date" 
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+            className="w-full p-3 rounded-2xl border border-slate-200 focus:ring-2 focus:ring-amber-500 outline-none mb-4 text-xs font-bold"
+          />
+          <button 
+            onClick={handleCalendarAction}
+            className="w-full py-3 bg-amber-500 text-white font-black text-[10px] uppercase tracking-widest rounded-2xl shadow-lg shadow-amber-100 flex items-center justify-center gap-2"
+          >
+            Confirmar en Google Calendar
+          </button>
+        </div>
+      )}
 
       <div className="h-[200px] w-full">
         <ResponsiveContainer width="100%" height="100%">

@@ -7,10 +7,13 @@ import { BankForm } from './components/BankForm';
 import { GrowthChart } from './components/GrowthChart';
 import { ATMMap } from './components/ATMMap';
 import { BankDiscounts } from './components/BankDiscounts';
-import { LogIn, TrendingUp, RefreshCw, Layers, Map as MapIcon, Settings, X, Sparkles, Cloud, Ticket, Loader2 } from 'lucide-react';
+import { BankInbox } from './components/BankInbox';
+import { LogIn, TrendingUp, RefreshCw, Layers, Map as MapIcon, Settings, X, Sparkles, Cloud, Ticket, Loader2, Bell, AlertTriangle } from 'lucide-react';
 import { getOrCreateSpreadsheet, fetchBanksFromSheet, saveBanksToSheet, fetchBalancesFromSheet, saveBalancesToSheet, getOrCreateFolder, uploadImageToDrive } from './services/googleSheets';
 import { fetchPublicBankRates } from './services/bankRates';
 import { fetchDailyDiscounts } from './services/bankDiscounts';
+import { createMaturityReminder } from './services/googleCalendar';
+import { requestNotificationPermission, sendLocalNotification } from './services/notifications';
 import { jsPDF } from 'jspdf';
 import { GoogleGenAI, Type } from "@google/genai";
 
@@ -23,10 +26,12 @@ const App: React.FC = () => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [isFetchingRates, setIsFetchingRates] = useState(false);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [isAddingEvent, setIsAddingEvent] = useState(false);
   const [sid, setSid] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [showConfig, setShowConfig] = useState(false);
   const [showAtms, setShowAtms] = useState(false);
+  const [showInbox, setShowInbox] = useState(false);
   
   // Discounts states
   const [isFetchingDiscounts, setIsFetchingDiscounts] = useState(false);
@@ -71,6 +76,7 @@ const App: React.FC = () => {
         if (parsedUser.accessToken) syncWithSheets(parsedUser.accessToken);
       } catch (e) { localStorage.removeItem(STORAGE_KEY); }
     }
+    requestNotificationPermission();
   }, []);
 
   // Camera Management
@@ -86,8 +92,11 @@ const App: React.FC = () => {
   };
 
   const stopCamera = () => {
-    const stream = videoRef.current?.srcObject as MediaStream;
-    stream?.getTracks().forEach(track => track.stop());
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+      videoRef.current.srcObject = null;
+    }
     setIsCameraActive(false);
   };
 
@@ -103,6 +112,8 @@ const App: React.FC = () => {
     context.drawImage(videoRef.current, 0, 0);
     
     const base64Image = canvasRef.current.toDataURL('image/jpeg', 0.8).split(',')[1];
+    
+    // Cerramos cámara inmediatamente después de capturar
     stopCamera();
 
     try {
@@ -111,12 +122,10 @@ const App: React.FC = () => {
       
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: [
-          { parts: [
-            { text: prompt },
-            { inlineData: { data: base64Image, mimeType: 'image/jpeg' } }
-          ]}
-        ],
+        contents: { parts: [
+          { text: prompt },
+          { inlineData: { data: base64Image, mimeType: 'image/jpeg' } }
+        ]},
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -152,11 +161,32 @@ const App: React.FC = () => {
     }
   };
 
-  const confirmDetectedAmount = () => {
-    if (detectedAmount !== null) {
-      setPesosBalance(detectedAmount);
-      if (user?.accessToken && sid) saveBalancesToSheet(user.accessToken, sid, detectedAmount, usdBalance);
-      setDetectedAmount(null);
+  const confirmDetectedAmount = async () => {
+    if (detectedAmount === null) return;
+    
+    const amountToSet = detectedAmount;
+    
+    // Paso 1: Actualizar UI local inmediatamente
+    setPesosBalance(amountToSet);
+    
+    // Paso 2: Limpiar estado para cerrar la ventana modal de confirmación
+    // Lo hacemos antes de las llamadas asíncronas para mejorar la UX
+    setDetectedAmount(null);
+
+    // Paso 3: Guardar en Sheets (asíncrono)
+    if (user?.accessToken && sid) {
+      saveBalancesToSheet(user.accessToken, sid, amountToSet, usdBalance).catch(e => {
+        console.error("Error guardando en Sheets:", e);
+      });
+    }
+    
+    // Paso 4: Notificación (asíncrono y seguro)
+    try {
+      sendLocalNotification("Saldo Actualizado", {
+        body: `Se ha registrado un nuevo saldo de $${amountToSet.toLocaleString('es-AR')}.`,
+      });
+    } catch (e) {
+      console.warn("Error enviando notificación:", e);
     }
   };
 
@@ -173,7 +203,12 @@ const App: React.FC = () => {
     setSortConfig(prev => (prev?.key === key ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' } : { key, direction: 'desc' }));
   };
 
-  const logout = () => { setUser(null); setSid(null); localStorage.removeItem(STORAGE_KEY); };
+  const logout = () => { 
+    setUser(null); 
+    setSid(null); 
+    setAuthError(null);
+    localStorage.removeItem(STORAGE_KEY); 
+  };
 
   const syncWithSheets = async (token: string) => {
     setIsSyncing(true);
@@ -196,7 +231,7 @@ const App: React.FC = () => {
     if (!google?.accounts?.oauth2) return;
     const client = google.accounts.oauth2.initTokenClient({
       client_id: clientId,
-      scope: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile email openid',
+      scope: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar email openid',
       callback: async (resp: any) => {
         if (resp.access_token) {
           const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${resp.access_token}` } });
@@ -219,6 +254,9 @@ const App: React.FC = () => {
       setPublicSources(result.sources);
       setLastPublicUpdate(result.timestamp);
       setShowRatesModal(true);
+      sendLocalNotification("Tasas Actualizadas", {
+        body: `Se encontraron nuevas tasas de interés para ${result.rates.length} bancos.`,
+      });
     } catch (e) { setAuthError("No se pudieron obtener las tasas públicas."); } finally { setIsFetchingRates(false); }
   };
 
@@ -249,6 +287,40 @@ const App: React.FC = () => {
     } catch (err) { setAuthError("Error generando PDF."); } finally { setIsGeneratingPdf(false); }
   };
 
+  const handleAddCalendarEvent = async (date: string) => {
+    if (!user?.accessToken || !selectedBankId) return;
+    const bank = banks.find(b => b.id === selectedBankId);
+    if (!bank) return;
+
+    setIsAddingEvent(true);
+    try {
+      const balance = chartCurrency === 'ARS' ? pesosBalance : usdBalance;
+      const rate = chartCurrency === 'ARS' ? bank.ratePesos : bank.rateUsd;
+      const estimatedGain = balance * (rate / 100) * (30/365);
+      
+      await createMaturityReminder(
+        user.accessToken, 
+        bank.name, 
+        balance + estimatedGain, 
+        chartCurrency, 
+        date
+      );
+
+      sendLocalNotification("Evento Agendado", {
+        body: `Se creó un recordatorio para el vencimiento en ${bank.name}.`,
+      });
+
+    } catch (err: any) {
+      if (err.message.includes('insufficient authentication scopes')) {
+        setAuthError("Permisos insuficientes. Por favor, cierra sesión y vuelve a ingresar para activar el Calendario.");
+      } else {
+        setAuthError(`Error de Calendario: ${err.message}`);
+      }
+    } finally {
+      setIsAddingEvent(false);
+    }
+  };
+
   const calculationData = useMemo(() => {
     const sb = banks.find(b => b.id === selectedBankId);
     const cb = banks.find(b => b.id === currentBankId);
@@ -273,19 +345,50 @@ const App: React.FC = () => {
         </div>
         <div className="flex items-center gap-1">
           <button onClick={() => setShowConfig(!showConfig)} className={`p-2 ${showConfig ? 'text-emerald-600 bg-emerald-50 rounded-lg' : 'text-slate-400'}`}><Settings size={20} /></button>
-          {user ? <img src={user.picture} onClick={logout} className="w-8 h-8 rounded-full border-2 border-emerald-500 cursor-pointer" /> : <button onClick={handleLogin} className="px-3 py-1.5 bg-slate-900 text-white text-[10px] font-bold rounded-xl flex items-center gap-1.5"><LogIn size={12} /> Ingresar</button>}
+          {user ? <img src={user.picture} onClick={logout} className="w-8 h-8 rounded-full border-2 border-emerald-500 cursor-pointer" title="Cerrar Sesión" /> : <button onClick={handleLogin} className="px-3 py-1.5 bg-slate-900 text-white text-[10px] font-bold rounded-xl flex items-center gap-1.5"><LogIn size={12} /> Ingresar</button>}
         </div>
       </header>
 
       {showConfig && (
         <div className="bg-white border-b border-emerald-100 p-6 space-y-4 animate-in slide-in-from-top duration-300">
-          <input type="text" value={clientId} onChange={(e) => setClientId(e.target.value)} className="w-full p-3 text-xs border border-slate-200 rounded-xl outline-none" />
-          <button onClick={() => setShowConfig(false)} className="w-full bg-emerald-600 text-white py-2 rounded-xl text-xs font-bold">Cerrar</button>
+          <div className="space-y-1">
+             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Google Client ID</label>
+             <input type="text" value={clientId} onChange={(e) => setClientId(e.target.value)} className="w-full p-3 text-xs border border-slate-200 rounded-xl outline-none" />
+          </div>
+          <button 
+            onClick={() => {
+              requestNotificationPermission().then(granted => {
+                if (granted) sendLocalNotification("¡Listo!", { body: "Las notificaciones están activadas." });
+              });
+            }}
+            className="w-full py-3 bg-indigo-50 text-indigo-600 text-[10px] font-black uppercase tracking-widest rounded-xl border border-indigo-100"
+          >
+            Probar Notificaciones
+          </button>
+          <button onClick={() => setShowConfig(false)} className="w-full bg-slate-900 text-white py-3 rounded-xl text-xs font-bold uppercase tracking-widest">Cerrar</button>
         </div>
       )}
 
       <main className="flex-1 p-5 space-y-5">
-        {authError && <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 flex justify-between gap-3 text-rose-800 text-xs"><p>{authError}</p><button onClick={() => setAuthError(null)}><X size={16} /></button></div>}
+        {authError && (
+          <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 flex flex-col gap-3 text-rose-800 text-xs animate-in shake duration-500">
+            <div className="flex justify-between items-start gap-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+                <p className="font-bold">{authError}</p>
+              </div>
+              <button onClick={() => setAuthError(null)} className="p-1 hover:bg-rose-100 rounded-lg"><X size={16} /></button>
+            </div>
+            {authError.includes('Permisos insuficientes') && (
+              <button 
+                onClick={logout} 
+                className="bg-rose-600 text-white py-2 px-4 rounded-xl font-black uppercase text-[10px] tracking-widest self-end shadow-md active:scale-95 transition-all"
+              >
+                Cerrar sesión ahora
+              </button>
+            )}
+          </div>
+        )}
 
         <BalanceCard 
           pesos={pesosBalance} usd={usdBalance} 
@@ -293,13 +396,20 @@ const App: React.FC = () => {
           onScanClick={startCamera}
         />
 
-        {/* Map Trigger Section */}
-        <div className="flex justify-center -mb-2">
+        <div className="flex gap-2 -mb-2">
           <button 
             onClick={() => setShowAtms(!showAtms)}
-            className={`flex items-center gap-2 px-6 py-3 rounded-full font-black text-[10px] uppercase tracking-widest transition-all duration-300 shadow-lg ${showAtms ? 'bg-rose-500 text-white' : 'bg-blue-600 text-white hover:scale-105 active:scale-95'}`}
+            className={`flex-1 flex items-center justify-center gap-2 py-3.5 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all duration-300 shadow-lg ${showAtms ? 'bg-rose-500 text-white' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
           >
-            {showAtms ? <><X size={14} /> Cerrar Mapa</> : <><MapIcon size={14} /> Buscar Cajeros</>}
+            {showAtms ? <><X size={14} /> Mapa</> : <><MapIcon size={14} /> Cajeros</>}
+          </button>
+          
+          <button 
+            onClick={() => setShowInbox(true)}
+            disabled={!user?.accessToken}
+            className={`flex-1 flex items-center justify-center gap-2 py-3.5 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all duration-300 shadow-lg ${user?.accessToken ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+          >
+            <Bell size={14} /> Notificaciones
           </button>
         </div>
 
@@ -310,7 +420,6 @@ const App: React.FC = () => {
           onSelect={setSelectedBankId} onSetCurrent={setCurrentBankId} onSort={handleSort} onAdd={() => { setEditingBank(null); setIsBankFormOpen(true); }} onEdit={(b) => { setEditingBank(b); setIsBankFormOpen(true); }} onDelete={(id) => { const nb = banks.filter(b => b.id !== id); setBanks(nb); if (user?.accessToken && sid) saveBanksToSheet(user.accessToken, sid, nb); }} onFetchPublic={handleFetchRates} isFetching={isFetchingRates} 
         />
 
-        {/* Discounts Trigger & List */}
         <div className="space-y-4">
           <button 
             onClick={handleSearchDiscounts}
@@ -335,7 +444,18 @@ const App: React.FC = () => {
 
         {selectedBankId ? (
           <div className="space-y-4">
-            <GrowthChart data={calculationData.chartData} currency={chartCurrency} totalGain={calculationData.totalGain} comparisonTotalGain={calculationData.comparisonTotalGain} potentialBankName={calculationData.potentialBankName} currentBankName={calculationData.currentBankName} onDownloadPdf={generatePDF} isDownloading={isGeneratingPdf} />
+            <GrowthChart 
+              data={calculationData.chartData} 
+              currency={chartCurrency} 
+              totalGain={calculationData.totalGain} 
+              comparisonTotalGain={calculationData.comparisonTotalGain} 
+              potentialBankName={calculationData.potentialBankName} 
+              currentBankName={calculationData.currentBankName} 
+              onDownloadPdf={generatePDF} 
+              isDownloading={isGeneratingPdf} 
+              onAddCalendarEvent={user?.accessToken ? handleAddCalendarEvent : undefined}
+              isAddingEvent={isAddingEvent}
+            />
             <div className="flex p-1 bg-slate-200/50 rounded-2xl">
               <button onClick={() => setChartCurrency('ARS')} className={`flex-1 py-3 rounded-xl font-black text-xs ${chartCurrency === 'ARS' ? 'bg-white text-emerald-600 shadow-lg' : 'text-slate-500'}`}>ARS</button>
               <button onClick={() => setChartCurrency('USD')} className={`flex-1 py-3 rounded-xl font-black text-xs ${chartCurrency === 'USD' ? 'bg-white text-emerald-600 shadow-lg' : 'text-slate-500'}`}>USD</button>
@@ -344,7 +464,14 @@ const App: React.FC = () => {
         ) : <div className="text-center py-10 bg-white rounded-3xl border border-dashed border-slate-200 text-slate-400 text-xs"><Layers className="mx-auto mb-2" size={32} />Selecciona un banco</div>}
       </main>
 
-      {/* Overlays (Camera, Detected Amount, Loading, Modals) */}
+      {showInbox && user?.accessToken && (
+        <BankInbox 
+          accessToken={user.accessToken} 
+          bankNames={banks.map(b => b.name)} 
+          onBack={() => setShowInbox(false)} 
+        />
+      )}
+
       {isCameraActive && (
         <div className="fixed inset-0 bg-black z-[100] flex flex-col">
           <div className="relative flex-1 bg-slate-900 flex items-center justify-center overflow-hidden">
@@ -378,12 +505,13 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {(isProcessingOcr || isUploadingToDrive || isFetchingDiscounts) && (
+      {(isProcessingOcr || isUploadingToDrive || isFetchingDiscounts || isAddingEvent) && (
         <div className="fixed inset-0 bg-slate-900/90 z-[120] flex flex-col items-center justify-center text-white p-6 text-center">
           <RefreshCw size={64} className="animate-spin text-amber-500 opacity-20" />
           <p className="mt-6 font-black text-sm uppercase tracking-[0.2em]">
             {isUploadingToDrive ? 'Guardando en Drive...' : 
              isFetchingDiscounts ? 'Buscando Beneficios del Día...' : 
+             isAddingEvent ? 'Agendando Vencimiento...' :
              'Analizando con IA...'}
           </p>
           <p className="mt-2 text-[10px] text-slate-400 font-bold uppercase tracking-widest">Esto puede tomar unos segundos</p>

@@ -36,3 +36,13 @@ export interface ChartDataPoint {
   monthName: string;
   value: number;
 }
+
+export interface BankEmail {
+  id: string;
+  threadId: string;
+  subject: string;
+  from: string;
+  date: string;
+  snippet: string;
+  body?: string;
+}
