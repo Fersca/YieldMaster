@@ -7,17 +7,17 @@ export interface BankSource {
 export interface BankPromotion {
   bankName: string;
   benefits: {
-    category: string; // e.g., "Supermercados", "Combustible"
+    category: string;
     description: string;
-    discount: string; // e.g., "30%"
+    discount: string;
   }[];
 }
 
 export interface Bank {
   id: string;
   name: string;
-  ratePesos: number; // Annual percentage rate (e.g., 35 for 35%)
-  rateUsd: number;   // Annual percentage rate (e.g., 2 for 2%)
+  ratePesos: number;
+  rateUsd: number;
   source?: 'public' | 'local';
   lastUpdated?: string;
 }
@@ -31,10 +31,10 @@ export interface UserProfile {
 
 export type Currency = 'ARS' | 'USD';
 
-export interface ChartDataPoint {
-  month: number;
-  monthName: string;
-  value: number;
+export interface ChatSpace {
+  name: string;
+  displayName: string;
+  type: string;
 }
 
 export interface BankEmail {

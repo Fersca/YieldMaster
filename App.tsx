@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { UserProfile, Bank, Currency, BankSource, BankPromotion } from './types';
+import { UserProfile, Bank, Currency, BankSource, BankPromotion, ChatSpace } from './types';
 import { BalanceCard } from './components/BalanceCard';
 import { BankTable } from './components/BankTable';
 import { BankForm } from './components/BankForm';
@@ -8,13 +8,21 @@ import { GrowthChart } from './components/GrowthChart';
 import { ATMMap } from './components/ATMMap';
 import { BankDiscounts } from './components/BankDiscounts';
 import { BankInbox } from './components/BankInbox';
-import { LogIn, TrendingUp, RefreshCw, Layers, Map as MapIcon, Settings, X, Sparkles, Cloud, Ticket, Loader2, Bell, AlertTriangle } from 'lucide-react';
-import { getOrCreateSpreadsheet, fetchBanksFromSheet, saveBanksToSheet, fetchBalancesFromSheet, saveBalancesToSheet, getOrCreateFolder, uploadImageToDrive } from './services/googleSheets';
+import { 
+  LogIn, TrendingUp, RefreshCw, Layers, Map as MapIcon, 
+  Settings, X, Sparkles, Cloud, Ticket, Loader2, Bell, 
+  AlertTriangle, MessageSquare, Send, Camera, ShieldCheck
+} from 'lucide-react';
+import { 
+  getOrCreateSpreadsheet, fetchBanksFromSheet, saveBanksToSheet, 
+  fetchBalancesFromSheet, saveBalancesToSheet, getOrCreateFolder, 
+  uploadImageToDrive 
+} from './services/googleSheets';
 import { fetchPublicBankRates } from './services/bankRates';
 import { fetchDailyDiscounts } from './services/bankDiscounts';
 import { createMaturityReminder } from './services/googleCalendar';
+import { fetchChatSpaces, sendChatCard } from './services/googleChat';
 import { requestNotificationPermission, sendLocalNotification } from './services/notifications';
-import { jsPDF } from 'jspdf';
 import { GoogleGenAI, Type } from "@google/genai";
 
 const DEFAULT_CLIENT_ID = '999301723526-fss4uphevi3q781oo58vv5jcm2umopbr.apps.googleusercontent.com';
@@ -25,7 +33,6 @@ const App: React.FC = () => {
   const [clientId, setClientId] = useState<string>(DEFAULT_CLIENT_ID);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isFetchingRates, setIsFetchingRates] = useState(false);
-  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [isAddingEvent, setIsAddingEvent] = useState(false);
   const [sid, setSid] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -33,6 +40,12 @@ const App: React.FC = () => {
   const [showAtms, setShowAtms] = useState(false);
   const [showInbox, setShowInbox] = useState(false);
   
+  // Chat States
+  const [showChatModal, setShowChatModal] = useState(false);
+  const [chatSpaces, setChatSpaces] = useState<ChatSpace[]>([]);
+  const [isLoadingSpaces, setIsLoadingSpaces] = useState(false);
+  const [isSendingToChat, setIsSendingToChat] = useState(false);
+
   // Discounts states
   const [isFetchingDiscounts, setIsFetchingDiscounts] = useState(false);
   const [discountsData, setDiscountsData] = useState<{promotions: BankPromotion[], sources: BankSource[], timestamp: string} | null>(null);
@@ -58,7 +71,6 @@ const App: React.FC = () => {
   const [isBankFormOpen, setIsBankFormOpen] = useState(false);
   const [editingBank, setEditingBank] = useState<Bank | null>(null);
 
-  // OCR/Camera/Drive states
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isProcessingOcr, setIsProcessingOcr] = useState(false);
   const [isUploadingToDrive, setIsUploadingToDrive] = useState(false);
@@ -66,7 +78,6 @@ const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Persistence: Restore user on mount
   useEffect(() => {
     const savedUser = localStorage.getItem(STORAGE_KEY);
     if (savedUser) {
@@ -79,7 +90,6 @@ const App: React.FC = () => {
     requestNotificationPermission();
   }, []);
 
-  // Camera Management
   const startCamera = async () => {
     setIsCameraActive(true);
     try {
@@ -102,24 +112,17 @@ const App: React.FC = () => {
 
   const captureAndScan = async () => {
     if (!videoRef.current || !canvasRef.current) return;
-    
     setIsProcessingOcr(true);
     const context = canvasRef.current.getContext('2d');
     if (!context) return;
-
     canvasRef.current.width = videoRef.current.videoWidth;
     canvasRef.current.height = videoRef.current.videoHeight;
     context.drawImage(videoRef.current, 0, 0);
-    
     const base64Image = canvasRef.current.toDataURL('image/jpeg', 0.8).split(',')[1];
-    
-    // Cerramos cámara inmediatamente después de capturar
     stopCamera();
-
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = "Actúa como un experto en OCR financiero. Extrae únicamente el saldo total o monto principal. Devuelve un JSON con la llave 'amount'. Si no hay monto claro, devuelve 0.";
-      
+      const prompt = "Actúa como un experto en OCR financiero. Extrae únicamente el saldo total o monto principal de esta imagen de homebanking. Devuelve un JSON con la llave 'amount'.";
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: { parts: [
@@ -135,7 +138,6 @@ const App: React.FC = () => {
           }
         }
       });
-
       const result = JSON.parse(response.text || '{"amount": 0}');
       if (result.amount > 0) {
         setDetectedAmount(result.amount);
@@ -145,74 +147,14 @@ const App: React.FC = () => {
             const folderId = await getOrCreateFolder(user.accessToken);
             const fileName = `YieldCapture_${new Date().getTime()}.jpg`;
             await uploadImageToDrive(user.accessToken, folderId, base64Image, fileName);
-          } catch (driveErr) {
-            console.error("Drive upload error:", driveErr);
-          } finally {
-            setIsUploadingToDrive(false);
-          }
+          } catch (driveErr) { console.error(driveErr); } finally { setIsUploadingToDrive(false); }
         }
-      } else {
-        setAuthError("No pudimos detectar un monto claro.");
-      }
-    } catch (err) {
-      setAuthError("Error procesando con IA.");
-    } finally {
-      setIsProcessingOcr(false);
-    }
-  };
-
-  const confirmDetectedAmount = async () => {
-    if (detectedAmount === null) return;
-    
-    const amountToSet = detectedAmount;
-    
-    // Paso 1: Actualizar UI local inmediatamente
-    setPesosBalance(amountToSet);
-    
-    // Paso 2: Limpiar estado para cerrar la ventana modal de confirmación
-    // Lo hacemos antes de las llamadas asíncronas para mejorar la UX
-    setDetectedAmount(null);
-
-    // Paso 3: Guardar en Sheets (asíncrono)
-    if (user?.accessToken && sid) {
-      saveBalancesToSheet(user.accessToken, sid, amountToSet, usdBalance).catch(e => {
-        console.error("Error guardando en Sheets:", e);
-      });
-    }
-    
-    // Paso 4: Notificación (asíncrono y seguro)
-    try {
-      sendLocalNotification("Saldo Actualizado", {
-        body: `Se ha registrado un nuevo saldo de $${amountToSet.toLocaleString('es-AR')}.`,
-      });
-    } catch (e) {
-      console.warn("Error enviando notificación:", e);
-    }
-  };
-
-  const sortedBanks = useMemo(() => {
-    if (!sortConfig) return banks;
-    return [...banks].sort((a, b) => {
-      const aValue = a[sortConfig.key] || 0;
-      const bValue = b[sortConfig.key] || 0;
-      return sortConfig.direction === 'asc' ? (aValue < bValue ? -1 : 1) : (aValue > bValue ? -1 : 1);
-    });
-  }, [banks, sortConfig]);
-
-  const handleSort = (key: 'ratePesos' | 'rateUsd' | 'name') => {
-    setSortConfig(prev => (prev?.key === key ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' } : { key, direction: 'desc' }));
-  };
-
-  const logout = () => { 
-    setUser(null); 
-    setSid(null); 
-    setAuthError(null);
-    localStorage.removeItem(STORAGE_KEY); 
+      } else { setAuthError("No pudimos detectar un monto claro."); }
+    } catch (err) { setAuthError("Error procesando con IA."); } finally { setIsProcessingOcr(false); }
   };
 
   const syncWithSheets = async (token: string) => {
-    setIsSyncing(true);
-    setAuthError(null);
+    setIsSyncing(true); setAuthError(null);
     try {
       const sheetId = await getOrCreateSpreadsheet(token);
       setSid(sheetId);
@@ -226,12 +168,17 @@ const App: React.FC = () => {
     } finally { setIsSyncing(false); }
   };
 
+  const logout = () => { 
+    setUser(null); setSid(null); setAuthError(null);
+    localStorage.removeItem(STORAGE_KEY); 
+  };
+
   const handleLogin = () => {
     const google = (window as any).google;
     if (!google?.accounts?.oauth2) return;
     const client = google.accounts.oauth2.initTokenClient({
       client_id: clientId,
-      scope: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar email openid',
+      scope: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/chat.messages.create https://www.googleapis.com/auth/chat.spaces.readonly email openid',
       callback: async (resp: any) => {
         if (resp.access_token) {
           const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${resp.access_token}` } });
@@ -246,6 +193,98 @@ const App: React.FC = () => {
     client.requestAccessToken();
   };
 
+  const calculationData = useMemo(() => {
+    const selectedBank = banks.find(b => b.id === selectedBankId);
+    const currentBank = banks.find(b => b.id === currentBankId);
+    
+    const balance = chartCurrency === 'ARS' ? pesosBalance : usdBalance;
+    const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+    const currentMonth = new Date().getMonth();
+    
+    const data = [];
+    let potentialAccumulated = balance;
+    let currentAccumulated = balance;
+    
+    const ratePotential = (selectedBank ? (chartCurrency === 'ARS' ? selectedBank.ratePesos : selectedBank.rateUsd) : 0) / 100 / 12;
+    const rateCurrent = (currentBank ? (chartCurrency === 'ARS' ? currentBank.ratePesos : currentBank.rateUsd) : 0) / 100 / 12;
+
+    for (let i = 0; i <= 12; i++) {
+      const monthIdx = (currentMonth + i) % 12;
+      data.push({
+        monthName: months[monthIdx],
+        potentialValue: Math.round(potentialAccumulated),
+        currentValue: currentBankId ? Math.round(currentAccumulated) : undefined
+      });
+      potentialAccumulated += potentialAccumulated * ratePotential;
+      currentAccumulated += currentAccumulated * rateCurrent;
+    }
+    
+    return {
+      chartData: data,
+      totalGain: potentialAccumulated - balance,
+      comparisonTotalGain: currentBankId ? currentAccumulated - balance : undefined
+    };
+  }, [banks, selectedBankId, currentBankId, pesosBalance, usdBalance, chartCurrency]);
+
+  const handleUpdateBalance = async (p: number, u: number) => {
+    setPesosBalance(p); setUsdBalance(u);
+    if (user?.accessToken && sid) {
+      await saveBalancesToSheet(user.accessToken, sid, p, u);
+    }
+  };
+
+  const handleSaveBank = async (bank: Bank) => {
+    const updatedBanks = editingBank 
+      ? banks.map(b => b.id === bank.id ? bank : b)
+      : [...banks, bank];
+    setBanks(updatedBanks);
+    setIsBankFormOpen(false);
+    setEditingBank(null);
+    if (user?.accessToken && sid) {
+      await saveBanksToSheet(user.accessToken, sid, updatedBanks);
+    }
+  };
+
+  const handleAddCalendarEvent = async (date: string) => {
+    if (!user?.accessToken || !selectedBankId) return;
+    const bank = banks.find(b => b.id === selectedBankId);
+    if (!bank) return;
+    setIsAddingEvent(true);
+    try {
+      const balance = chartCurrency === 'ARS' ? pesosBalance : usdBalance;
+      const rate = chartCurrency === 'ARS' ? bank.ratePesos : bank.rateUsd;
+      const estimatedGain = balance * (rate / 100);
+      await createMaturityReminder(user.accessToken, bank.name, balance + estimatedGain, chartCurrency, date);
+      sendLocalNotification("Recordatorio Agendado", { body: `Se agendó el vencimiento en Google Calendar para el ${date}.` });
+    } catch (e: any) {
+      setAuthError(e.message);
+    } finally {
+      setIsAddingEvent(false);
+    }
+  };
+
+  const handleSendToChat = async (spaceName: string) => {
+    if (!user?.accessToken || !selectedBankId) return;
+    const bank = banks.find(b => b.id === selectedBankId);
+    if (!bank) return;
+
+    setIsSendingToChat(true);
+    try {
+      const details = [
+        { label: 'Banco Seleccionado', value: bank.name },
+        { label: 'Tasa Anual', value: `${chartCurrency === 'ARS' ? bank.ratePesos : bank.rateUsd}%` },
+        { label: 'Moneda', value: chartCurrency },
+        { label: 'Ganancia Est. Anual', value: `${chartCurrency === 'ARS' ? '$' : 'u$s'} ${calculationData.totalGain.toLocaleString()}` }
+      ];
+      await sendChatCard(user.accessToken, spaceName, `Proyección: ${bank.name}`, 'Resumen generado vía YieldMaster', details);
+      setShowChatModal(false);
+    } catch (e: any) {
+      setAuthError(e.message);
+    } finally {
+      setIsSendingToChat(false);
+    }
+  };
+
   const handleFetchRates = async () => {
     setIsFetchingRates(true);
     try {
@@ -254,217 +293,338 @@ const App: React.FC = () => {
       setPublicSources(result.sources);
       setLastPublicUpdate(result.timestamp);
       setShowRatesModal(true);
-      sendLocalNotification("Tasas Actualizadas", {
-        body: `Se encontraron nuevas tasas de interés para ${result.rates.length} bancos.`,
-      });
-    } catch (e) { setAuthError("No se pudieron obtener las tasas públicas."); } finally { setIsFetchingRates(false); }
+    } catch (e) { setAuthError("No se pudieron obtener las tasas."); } finally { setIsFetchingRates(false); }
   };
 
+  // Added handleSearchDiscounts to fix the error
   const handleSearchDiscounts = async () => {
+    if (banks.length === 0) {
+      setAuthError("Agrega bancos para buscar sus descuentos.");
+      return;
+    }
     setIsFetchingDiscounts(true);
-    setAuthError(null);
     try {
-      const bankNames = banks.map(b => b.name);
-      const result = await fetchDailyDiscounts(bankNames);
+      const result = await fetchDailyDiscounts(banks.map(b => b.name));
       setDiscountsData(result);
-    } catch (e) {
-      setAuthError("No se pudieron buscar los descuentos del día.");
+      if (result.promotions.length > 0) {
+        sendLocalNotification("Descuentos del día", { body: `Se encontraron beneficios para tus bancos.` });
+      } else {
+        setAuthError("No se encontraron beneficios para tus bancos hoy.");
+      }
+    } catch (e: any) {
+      setAuthError("No se pudieron obtener los descuentos.");
     } finally {
       setIsFetchingDiscounts(false);
     }
   };
 
-  const generatePDF = async () => {
-    setIsGeneratingPdf(true);
-    try {
-      const doc = new jsPDF('p', 'mm', 'a4');
-      doc.setFillColor(5, 150, 105);
-      doc.rect(0, 0, 210, 40, 'F');
-      doc.setTextColor(255);
-      doc.setFontSize(24);
-      doc.text('YieldMaster Report', 20, 25);
-      doc.save(`YieldMaster_Reporte.pdf`);
-    } catch (err) { setAuthError("Error generando PDF."); } finally { setIsGeneratingPdf(false); }
-  };
-
-  const handleAddCalendarEvent = async (date: string) => {
-    if (!user?.accessToken || !selectedBankId) return;
-    const bank = banks.find(b => b.id === selectedBankId);
-    if (!bank) return;
-
-    setIsAddingEvent(true);
-    try {
-      const balance = chartCurrency === 'ARS' ? pesosBalance : usdBalance;
-      const rate = chartCurrency === 'ARS' ? bank.ratePesos : bank.rateUsd;
-      const estimatedGain = balance * (rate / 100) * (30/365);
-      
-      await createMaturityReminder(
-        user.accessToken, 
-        bank.name, 
-        balance + estimatedGain, 
-        chartCurrency, 
-        date
-      );
-
-      sendLocalNotification("Evento Agendado", {
-        body: `Se creó un recordatorio para el vencimiento en ${bank.name}.`,
-      });
-
-    } catch (err: any) {
-      if (err.message.includes('insufficient authentication scopes')) {
-        setAuthError("Permisos insuficientes. Por favor, cierra sesión y vuelve a ingresar para activar el Calendario.");
+  const applySuggestedRates = async () => {
+    if (!suggestedRates) return;
+    const updatedBanks = [...banks];
+    suggestedRates.forEach(sug => {
+      const idx = updatedBanks.findIndex(b => b.name.toLowerCase() === sug.name?.toLowerCase());
+      if (idx !== -1) {
+        updatedBanks[idx] = { ...updatedBanks[idx], ratePesos: sug.ratePesos || 0, source: 'public', lastUpdated: lastPublicUpdate || undefined };
       } else {
-        setAuthError(`Error de Calendario: ${err.message}`);
+        updatedBanks.push({ 
+          id: crypto.randomUUID(), 
+          name: sug.name || 'Nuevo Banco', 
+          ratePesos: sug.ratePesos || 0, 
+          rateUsd: sug.rateUsd || 0, 
+          source: 'public', 
+          lastUpdated: lastPublicUpdate || undefined 
+        });
       }
-    } finally {
-      setIsAddingEvent(false);
-    }
+    });
+    setBanks(updatedBanks);
+    setShowRatesModal(false);
+    if (user?.accessToken && sid) await saveBanksToSheet(user.accessToken, sid, updatedBanks);
+    sendLocalNotification("Tasas Actualizadas", { body: "Se han aplicado las tasas más recientes obtenidas de internet." });
   };
 
-  const calculationData = useMemo(() => {
-    const sb = banks.find(b => b.id === selectedBankId);
-    const cb = banks.find(b => b.id === currentBankId);
-    if (!sb) return { chartData: [], totalGain: 0 };
-    const initial = chartCurrency === 'ARS' ? pesosBalance : usdBalance;
-    const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-    const data = [];
-    const selM = ((chartCurrency === 'ARS' ? sb.ratePesos : sb.rateUsd) / 100) / 12;
-    const curM = cb ? ((chartCurrency === 'ARS' ? cb.ratePesos : cb.rateUsd) / 100) / 12 : 0;
-    let sc = initial, cc = initial;
-    data.push({ monthName: 'Hoy', potentialValue: Math.round(sc), currentValue: cb ? Math.round(cc) : undefined });
-    for (let i = 0; i < 12; i++) { sc *= (1 + selM); cc *= (1 + curM); data.push({ monthName: months[i], potentialValue: Math.round(sc), currentValue: cb ? Math.round(cc) : undefined }); }
-    return { chartData: data, totalGain: sc - initial, comparisonTotalGain: cb ? (cc - initial) : undefined, potentialBankName: sb.name, currentBankName: cb?.name };
-  }, [banks, selectedBankId, currentBankId, pesosBalance, usdBalance, chartCurrency]);
+  const sortedBanks = useMemo(() => {
+    if (!sortConfig) return banks;
+    return [...banks].sort((a, b) => {
+      const aVal = a[sortConfig.key] || 0;
+      const bVal = b[sortConfig.key] || 0;
+      return sortConfig.direction === 'asc' ? (aVal < bVal ? -1 : 1) : (aVal > bVal ? -1 : 1);
+    });
+  }, [banks, sortConfig]);
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-8 relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none">
+          <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-emerald-500 rounded-full blur-[120px]"></div>
+          <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-500 rounded-full blur-[120px]"></div>
+        </div>
+        <div className="bg-white p-10 rounded-[48px] shadow-2xl w-full max-w-sm text-center relative z-10 border border-white/20">
+          <div className="bg-emerald-600 w-20 h-20 rounded-3xl mx-auto mb-6 flex items-center justify-center shadow-lg shadow-emerald-200">
+            <TrendingUp size={40} className="text-white" />
+          </div>
+          <h1 className="text-3xl font-black text-slate-800 mb-2">YieldMaster</h1>
+          <p className="text-slate-500 mb-8 text-sm font-medium leading-relaxed">Tu arquitectura financiera privada impulsada por Google Sheets & IA.</p>
+          <button 
+            onClick={handleLogin}
+            className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black flex items-center justify-center gap-3 hover:bg-slate-800 transition-all active:scale-95 shadow-xl shadow-slate-200"
+          >
+            <LogIn size={20} /> Iniciar con Google
+          </button>
+          <p className="mt-6 text-[10px] text-slate-400 font-bold uppercase tracking-widest flex items-center justify-center gap-2">
+            <ShieldCheck size={12} /> Privacy First Infrastructure
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-md mx-auto min-h-screen pb-12 flex flex-col bg-slate-50 relative overflow-x-hidden border-x border-slate-200 shadow-2xl">
-      <header className="p-6 flex justify-between items-center bg-white/90 backdrop-blur-md sticky top-0 z-10 border-b border-slate-100">
-        <div className="flex items-center gap-2">
-          <div className="bg-emerald-600 p-2 rounded-xl text-white shadow-lg"><TrendingUp size={20} /></div>
-          <h1 className="font-black text-xl text-slate-800">YieldMaster</h1>
+    <div className="max-w-md mx-auto min-h-screen pb-24 relative bg-slate-50">
+      {/* App Bar */}
+      <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-xl border-b border-slate-100 p-4 flex justify-between items-center">
+        <div className="flex items-center gap-3">
+          <img src={user.picture} className="w-10 h-10 rounded-2xl border-2 border-emerald-100 shadow-sm" alt="Profile" />
+          <div className="flex flex-col">
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-0.5">Hola,</span>
+            <span className="text-xs font-black text-slate-800 leading-none">{user.name.split(' ')[0]}</span>
+          </div>
         </div>
-        <div className="flex items-center gap-1">
-          <button onClick={() => setShowConfig(!showConfig)} className={`p-2 ${showConfig ? 'text-emerald-600 bg-emerald-50 rounded-lg' : 'text-slate-400'}`}><Settings size={20} /></button>
-          {user ? <img src={user.picture} onClick={logout} className="w-8 h-8 rounded-full border-2 border-emerald-500 cursor-pointer" title="Cerrar Sesión" /> : <button onClick={handleLogin} className="px-3 py-1.5 bg-slate-900 text-white text-[10px] font-bold rounded-xl flex items-center gap-1.5"><LogIn size={12} /> Ingresar</button>}
+        <div className="flex items-center gap-2">
+          {isSyncing && <RefreshCw size={18} className="text-emerald-500 animate-spin" />}
+          <button onClick={() => setShowConfig(!showConfig)} className="p-2 text-slate-400 hover:text-slate-800 transition-colors">
+            <Settings size={22} />
+          </button>
         </div>
       </header>
 
-      {showConfig && (
-        <div className="bg-white border-b border-emerald-100 p-6 space-y-4 animate-in slide-in-from-top duration-300">
-          <div className="space-y-1">
-             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Google Client ID</label>
-             <input type="text" value={clientId} onChange={(e) => setClientId(e.target.value)} className="w-full p-3 text-xs border border-slate-200 rounded-xl outline-none" />
-          </div>
-          <button 
-            onClick={() => {
-              requestNotificationPermission().then(granted => {
-                if (granted) sendLocalNotification("¡Listo!", { body: "Las notificaciones están activadas." });
-              });
-            }}
-            className="w-full py-3 bg-indigo-50 text-indigo-600 text-[10px] font-black uppercase tracking-widest rounded-xl border border-indigo-100"
-          >
-            Probar Notificaciones
-          </button>
-          <button onClick={() => setShowConfig(false)} className="w-full bg-slate-900 text-white py-3 rounded-xl text-xs font-bold uppercase tracking-widest">Cerrar</button>
-        </div>
-      )}
-
-      <main className="flex-1 p-5 space-y-5">
-        {authError && (
-          <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 flex flex-col gap-3 text-rose-800 text-xs animate-in shake duration-500">
-            <div className="flex justify-between items-start gap-3">
-              <div className="flex items-start gap-2">
-                <AlertTriangle size={16} className="shrink-0 mt-0.5" />
-                <p className="font-bold">{authError}</p>
-              </div>
-              <button onClick={() => setAuthError(null)} className="p-1 hover:bg-rose-100 rounded-lg"><X size={16} /></button>
-            </div>
-            {authError.includes('Permisos insuficientes') && (
-              <button 
-                onClick={logout} 
-                className="bg-rose-600 text-white py-2 px-4 rounded-xl font-black uppercase text-[10px] tracking-widest self-end shadow-md active:scale-95 transition-all"
-              >
-                Cerrar sesión ahora
-              </button>
-            )}
-          </div>
-        )}
-
+      {/* Main Content */}
+      <main className="p-4 space-y-6">
         <BalanceCard 
-          pesos={pesosBalance} usd={usdBalance} 
-          onUpdate={(p, u) => { setPesosBalance(p); setUsdBalance(u); if (user?.accessToken && sid) saveBalancesToSheet(user.accessToken, sid, p, u); }}
-          onScanClick={startCamera}
+          pesos={pesosBalance} 
+          usd={usdBalance} 
+          onUpdate={handleUpdateBalance} 
+          onScanClick={startCamera} 
         />
 
-        <div className="flex gap-2 -mb-2">
+        <div className="flex gap-2 mb-4 overflow-x-auto pb-2 scrollbar-hide">
           <button 
-            onClick={() => setShowAtms(!showAtms)}
-            className={`flex-1 flex items-center justify-center gap-2 py-3.5 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all duration-300 shadow-lg ${showAtms ? 'bg-rose-500 text-white' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+            onClick={() => setChartCurrency(chartCurrency === 'ARS' ? 'USD' : 'ARS')}
+            className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${chartCurrency === 'ARS' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'bg-emerald-600 text-white shadow-lg shadow-emerald-100'}`}
           >
-            {showAtms ? <><X size={14} /> Mapa</> : <><MapIcon size={14} /> Cajeros</>}
+            VER EN {chartCurrency === 'ARS' ? 'USD' : 'ARS'}
           </button>
-          
           <button 
-            onClick={() => setShowInbox(true)}
-            disabled={!user?.accessToken}
-            className={`flex-1 flex items-center justify-center gap-2 py-3.5 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all duration-300 shadow-lg ${user?.accessToken ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+            onClick={handleFetchRates}
+            className="px-4 py-2 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-lg shadow-slate-200"
           >
-            <Bell size={14} /> Notificaciones
+            <Sparkles size={12} /> Sugerencias IA
+          </button>
+          <button 
+            onClick={async () => {
+              setIsLoadingSpaces(true);
+              setShowChatModal(true);
+              try {
+                const spaces = await fetchChatSpaces(user.accessToken!);
+                setChatSpaces(spaces);
+              } catch (e) { setAuthError("Error cargando chats."); } finally { setIsLoadingSpaces(false); }
+            }}
+            className="px-4 py-2 bg-white border border-slate-100 text-slate-600 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-sm"
+          >
+            <Send size={12} /> Enviar Reporte
           </button>
         </div>
+
+        <GrowthChart 
+          data={calculationData.chartData}
+          currency={chartCurrency}
+          totalGain={calculationData.totalGain}
+          comparisonTotalGain={calculationData.comparisonTotalGain}
+          potentialBankName={banks.find(b => b.id === selectedBankId)?.name}
+          currentBankName={banks.find(b => b.id === currentBankId)?.name}
+          onAddCalendarEvent={handleAddCalendarEvent}
+          isAddingEvent={isAddingEvent}
+        />
+
+        <BankTable 
+          banks={sortedBanks}
+          selectedBankId={selectedBankId}
+          currentBankId={currentBankId}
+          sortConfig={sortConfig}
+          publicSources={publicSources}
+          lastPublicUpdate={lastPublicUpdate}
+          onSelect={setSelectedBankId}
+          onSetCurrent={setCurrentBankId}
+          onSort={(key) => setSortConfig(prev => prev?.key === key ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' } : { key, direction: 'desc' })}
+          onAdd={() => setIsBankFormOpen(true)}
+          onEdit={(b) => { setEditingBank(b); setIsBankFormOpen(true); }}
+          onDelete={(id) => {
+            const up = banks.filter(b => b.id !== id);
+            setBanks(up);
+            if (user.accessToken && sid) saveBanksToSheet(user.accessToken, sid, up);
+          }}
+          onFetchPublic={handleFetchRates}
+          isFetching={isFetchingRates}
+        />
 
         {showAtms && <ATMMap />}
         
-        <BankTable 
-          banks={sortedBanks} selectedBankId={selectedBankId} currentBankId={currentBankId} sortConfig={sortConfig} publicSources={publicSources} lastPublicUpdate={lastPublicUpdate}
-          onSelect={setSelectedBankId} onSetCurrent={setCurrentBankId} onSort={handleSort} onAdd={() => { setEditingBank(null); setIsBankFormOpen(true); }} onEdit={(b) => { setEditingBank(b); setIsBankFormOpen(true); }} onDelete={(id) => { const nb = banks.filter(b => b.id !== id); setBanks(nb); if (user?.accessToken && sid) saveBanksToSheet(user.accessToken, sid, nb); }} onFetchPublic={handleFetchRates} isFetching={isFetchingRates} 
-        />
-
-        <div className="space-y-4">
-          <button 
-            onClick={handleSearchDiscounts}
-            disabled={isFetchingDiscounts}
-            className={`w-full py-4 rounded-3xl font-black text-[11px] uppercase tracking-[0.2em] flex items-center justify-center gap-3 transition-all shadow-xl ${isFetchingDiscounts ? 'bg-slate-100 text-slate-400' : 'bg-amber-500 text-white hover:bg-amber-600 active:scale-95'}`}
-          >
-            {isFetchingDiscounts ? (
-              <><Loader2 size={16} className="animate-spin" /> Escaneando Beneficios...</>
-            ) : (
-              <><Ticket size={16} /> Buscar descuentos del día</>
-            )}
-          </button>
-
-          {discountsData && (
-            <BankDiscounts 
-              data={discountsData.promotions} 
-              sources={discountsData.sources} 
-              timestamp={discountsData.timestamp} 
-            />
-          )}
-        </div>
-
-        {selectedBankId ? (
-          <div className="space-y-4">
-            <GrowthChart 
-              data={calculationData.chartData} 
-              currency={chartCurrency} 
-              totalGain={calculationData.totalGain} 
-              comparisonTotalGain={calculationData.comparisonTotalGain} 
-              potentialBankName={calculationData.potentialBankName} 
-              currentBankName={calculationData.currentBankName} 
-              onDownloadPdf={generatePDF} 
-              isDownloading={isGeneratingPdf} 
-              onAddCalendarEvent={user?.accessToken ? handleAddCalendarEvent : undefined}
-              isAddingEvent={isAddingEvent}
-            />
-            <div className="flex p-1 bg-slate-200/50 rounded-2xl">
-              <button onClick={() => setChartCurrency('ARS')} className={`flex-1 py-3 rounded-xl font-black text-xs ${chartCurrency === 'ARS' ? 'bg-white text-emerald-600 shadow-lg' : 'text-slate-500'}`}>ARS</button>
-              <button onClick={() => setChartCurrency('USD')} className={`flex-1 py-3 rounded-xl font-black text-xs ${chartCurrency === 'USD' ? 'bg-white text-emerald-600 shadow-lg' : 'text-slate-500'}`}>USD</button>
-            </div>
-          </div>
-        ) : <div className="text-center py-10 bg-white rounded-3xl border border-dashed border-slate-200 text-slate-400 text-xs"><Layers className="mx-auto mb-2" size={32} />Selecciona un banco</div>}
+        {discountsData && (
+          <BankDiscounts 
+            data={discountsData.promotions} 
+            sources={discountsData.sources} 
+            timestamp={discountsData.timestamp} 
+          />
+        )}
       </main>
 
-      {showInbox && user?.accessToken && (
+      {/* Bottom Nav */}
+      <nav className="fixed bottom-6 left-4 right-4 bg-slate-900/90 backdrop-blur-2xl rounded-[32px] p-2 flex justify-around items-center shadow-2xl z-40 border border-white/10">
+        <button onClick={() => { setShowAtms(false); setDiscountsData(null); }} className="p-4 text-emerald-400"><TrendingUp size={24} /></button>
+        <button onClick={() => setShowAtms(!showAtms)} className={`p-4 transition-all ${showAtms ? 'text-blue-400 scale-110' : 'text-slate-500'}`}><MapIcon size={24} /></button>
+        <button onClick={handleSearchDiscounts} className={`p-4 transition-all ${isFetchingDiscounts ? 'text-amber-400 animate-pulse' : 'text-slate-500'}`}><Ticket size={24} /></button>
+        <button onClick={() => setShowInbox(true)} className="p-4 text-slate-500"><Bell size={24} /></button>
+      </nav>
+
+      {/* Modals */}
+      {isBankFormOpen && (
+        <BankForm 
+          bank={editingBank} 
+          onSave={handleSaveBank} 
+          onCancel={() => { setIsBankFormOpen(false); setEditingBank(null); }} 
+        />
+      )}
+
+      {showConfig && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[60] p-6 flex items-center justify-center">
+          <div className="bg-white rounded-[40px] w-full max-w-sm p-8 shadow-2xl">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-black text-slate-800">Ajustes</h3>
+              <button onClick={() => setShowConfig(false)} className="text-slate-400"><X size={24} /></button>
+            </div>
+            <div className="space-y-4">
+              <div className="p-4 bg-slate-50 rounded-2xl">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Spreadsheet ID</p>
+                <p className="text-[11px] font-mono text-slate-600 break-all">{sid || 'No vinculado'}</p>
+              </div>
+              <button onClick={logout} className="w-full py-4 bg-rose-50 text-rose-600 rounded-2xl font-black text-xs">Cerrar Sesión</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* OCR Overlay */}
+      {isCameraActive && (
+        <div className="fixed inset-0 bg-black z-[100] flex flex-col">
+          <video ref={videoRef} autoPlay playsInline className="flex-1 object-cover" />
+          <canvas ref={canvasRef} className="hidden" />
+          <div className="absolute inset-0 border-[40px] border-black/40 pointer-events-none flex items-center justify-center">
+            <div className="w-full max-w-xs aspect-[4/3] border-2 border-emerald-500 rounded-3xl relative">
+              <div className="absolute -top-10 left-0 right-0 text-center">
+                <span className="bg-emerald-500 text-white text-[10px] font-black px-4 py-1 rounded-full">ENMARCA EL SALDO</span>
+              </div>
+            </div>
+          </div>
+          <div className="p-8 flex justify-between items-center bg-black/80 backdrop-blur-xl">
+            <button onClick={stopCamera} className="p-4 text-white/60"><X size={32} /></button>
+            <button onClick={captureAndScan} className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-2xl active:scale-90 transition-transform">
+              <div className="w-16 h-16 rounded-full border-4 border-slate-900" />
+            </button>
+            <div className="w-12" />
+          </div>
+        </div>
+      )}
+
+      {detectedAmount !== null && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-xl z-[110] p-8 flex items-center justify-center">
+          <div className="bg-white rounded-[48px] w-full max-w-sm p-8 text-center animate-in zoom-in duration-300">
+            <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-3xl mx-auto mb-6 flex items-center justify-center">
+              <Sparkles size={40} />
+            </div>
+            <h3 className="text-xl font-black text-slate-800 mb-2">¡Saldo Detectado!</h3>
+            <p className="text-slate-500 text-sm mb-6">Hemos escaneado un saldo de:</p>
+            <p className="text-4xl font-black text-emerald-600 mb-8">${detectedAmount.toLocaleString('es-AR')}</p>
+            <div className="flex gap-3">
+              <button onClick={() => setDetectedAmount(null)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black text-xs">DESCARTAR</button>
+              <button 
+                onClick={async () => {
+                  const amt = detectedAmount;
+                  setPesosBalance(amt);
+                  setDetectedAmount(null);
+                  if (user.accessToken && sid) saveBalancesToSheet(user.accessToken, sid, amt, usdBalance);
+                  sendLocalNotification("Saldo Actualizado", { body: `Nuevo saldo: $${amt.toLocaleString()}` });
+                }} 
+                className="flex-1 py-4 bg-emerald-600 text-white rounded-2xl font-black text-xs shadow-lg shadow-emerald-200"
+              >
+                CONFIRMAR
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRatesModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[70] p-6 flex items-center justify-center">
+          <div className="bg-white rounded-[40px] w-full max-w-sm overflow-hidden flex flex-col max-h-[80vh] shadow-2xl">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <h3 className="text-lg font-black text-slate-800">Nuevas Tasas Encontradas</h3>
+              <button onClick={() => setShowRatesModal(false)} className="text-slate-400"><X size={20} /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {suggestedRates?.map((sug, i) => (
+                <div key={i} className="flex justify-between items-center p-3 bg-slate-50 rounded-2xl">
+                  <span className="text-xs font-black text-slate-700">{sug.name}</span>
+                  <span className="text-xs font-black text-blue-600">{sug.ratePesos}%</span>
+                </div>
+              ))}
+            </div>
+            <div className="p-6 bg-white border-t border-slate-100">
+              <button 
+                onClick={applySuggestedRates}
+                className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-black text-xs shadow-lg shadow-emerald-200"
+              >
+                ACTUALIZAR MIS DATOS
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showChatModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[80] p-6 flex items-center justify-center">
+          <div className="bg-white rounded-[40px] w-full max-w-sm p-6 shadow-2xl">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-lg font-black text-slate-800">Enviar a Google Chat</h3>
+              <button onClick={() => setShowChatModal(false)} className="text-slate-400"><X size={20} /></button>
+            </div>
+            {isLoadingSpaces ? (
+              <div className="py-12 flex flex-col items-center gap-3">
+                <Loader2 className="animate-spin text-emerald-500" />
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Buscando espacios...</p>
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-60 overflow-y-auto mb-6">
+                {chatSpaces.map((space) => (
+                  <button 
+                    key={space.name}
+                    onClick={() => handleSendToChat(space.name)}
+                    disabled={isSendingToChat}
+                    className="w-full text-left p-4 hover:bg-slate-50 rounded-2xl flex items-center justify-between group transition-all"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center"><MessageSquare size={16} /></div>
+                      <span className="text-xs font-bold text-slate-700">{space.displayName}</span>
+                    </div>
+                    <Send size={14} className="text-slate-300 group-hover:text-emerald-500 transition-colors" />
+                  </button>
+                ))}
+              </div>
+            )}
+            <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest text-center">Tus datos nunca salen del ecosistema Google</p>
+          </div>
+        </div>
+      )}
+
+      {showInbox && user.accessToken && (
         <BankInbox 
           accessToken={user.accessToken} 
           bankNames={banks.map(b => b.name)} 
@@ -472,86 +632,16 @@ const App: React.FC = () => {
         />
       )}
 
-      {isCameraActive && (
-        <div className="fixed inset-0 bg-black z-[100] flex flex-col">
-          <div className="relative flex-1 bg-slate-900 flex items-center justify-center overflow-hidden">
-            <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
-            <canvas ref={canvasRef} className="hidden" />
-            <div className="absolute inset-0 border-[40px] border-black/50 pointer-events-none">
-              <div className="w-full h-full border-2 border-emerald-500/50 rounded-3xl relative">
-                <div className="absolute top-1/2 left-0 w-full h-0.5 bg-emerald-500/30 animate-pulse" />
-              </div>
-            </div>
-            <button onClick={stopCamera} className="absolute top-10 left-6 bg-black/40 text-white p-3 rounded-full"><X size={24} /></button>
+      {/* Global Error Banner */}
+      {authError && (
+        <div className="fixed top-20 left-4 right-4 bg-rose-600 text-white p-4 rounded-2xl shadow-2xl z-[200] flex justify-between items-center animate-in slide-in-from-top-4 duration-300">
+          <div className="flex items-center gap-3">
+            <AlertTriangle size={20} />
+            <p className="text-xs font-bold">{authError}</p>
           </div>
-          <div className="bg-slate-900 p-8 flex justify-center">
-            <button onClick={captureAndScan} className="w-20 h-20 bg-white rounded-full flex items-center justify-center"><div className="w-16 h-16 border-4 border-slate-900 rounded-full flex items-center justify-center"><Sparkles size={32} className="text-slate-900" /></div></button>
-          </div>
+          <button onClick={() => setAuthError(null)} className="p-1"><X size={18} /></button>
         </div>
       )}
-
-      {detectedAmount !== null && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-6 z-[110] backdrop-blur-md">
-          <div className="bg-white rounded-[32px] w-full max-w-sm p-8 text-center animate-in zoom-in">
-            <div className="bg-emerald-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-emerald-600"><Sparkles size={32} /></div>
-            <h3 className="text-lg font-black text-slate-800 mb-2">¡Monto Detectado!</h3>
-            <div className="text-4xl font-black text-emerald-600 mb-4">$ {detectedAmount.toLocaleString('es-AR')}</div>
-            {isUploadingToDrive && <div className="flex items-center justify-center gap-2 text-[10px] text-blue-500 font-bold mb-4 animate-pulse"><Cloud size={14} /> Guardando copia en Drive...</div>}
-            <div className="flex gap-3">
-              <button onClick={() => setDetectedAmount(null)} className="flex-1 py-4 bg-slate-100 text-slate-500 font-bold rounded-2xl text-xs">Descartar</button>
-              <button onClick={confirmDetectedAmount} className="flex-1 py-4 bg-emerald-600 text-white font-bold rounded-2xl text-xs shadow-lg">Confirmar</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {(isProcessingOcr || isUploadingToDrive || isFetchingDiscounts || isAddingEvent) && (
-        <div className="fixed inset-0 bg-slate-900/90 z-[120] flex flex-col items-center justify-center text-white p-6 text-center">
-          <RefreshCw size={64} className="animate-spin text-amber-500 opacity-20" />
-          <p className="mt-6 font-black text-sm uppercase tracking-[0.2em]">
-            {isUploadingToDrive ? 'Guardando en Drive...' : 
-             isFetchingDiscounts ? 'Buscando Beneficios del Día...' : 
-             isAddingEvent ? 'Agendando Vencimiento...' :
-             'Analizando con IA...'}
-          </p>
-          <p className="mt-2 text-[10px] text-slate-400 font-bold uppercase tracking-widest">Esto puede tomar unos segundos</p>
-        </div>
-      )}
-
-      {showRatesModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-6 z-[60] backdrop-blur-sm">
-          <div className="bg-white rounded-[32px] w-full max-w-sm overflow-hidden p-6 animate-in zoom-in">
-            <h3 className="text-lg font-black mb-4">Nuevas Tasas Detectadas</h3>
-            <div className="space-y-2 mb-6 max-h-40 overflow-y-auto">
-              {suggestedRates?.map((r, i) => (
-                <div key={i} className="flex justify-between items-center p-2 bg-slate-50 rounded-xl text-[10px]">
-                  <span className="font-bold text-slate-700">{r.name}</span>
-                  <span className="text-blue-600 font-black">{r.ratePesos}%</span>
-                </div>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <button onClick={() => setShowRatesModal(false)} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-2xl text-xs">Cancelar</button>
-              <button onClick={() => {
-                const nb = [...banks];
-                const now = new Date().toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' });
-                suggestedRates?.forEach(s => {
-                  const idx = nb.findIndex(b => b.name.toLowerCase().includes(s.name?.toLowerCase() || ''));
-                  if (idx > -1) nb[idx] = { ...nb[idx], ratePesos: s.ratePesos || 0, source: 'public', lastUpdated: now };
-                });
-                setBanks(nb); setShowRatesModal(false); if (user?.accessToken && sid) saveBanksToSheet(user.accessToken, sid, nb);
-              }} className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-2xl text-xs">Actualizar</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {isBankFormOpen && <BankForm bank={editingBank} onSave={(b) => { 
-        const nb = editingBank ? banks.map(old => old.id === b.id ? { ...b, source: 'local' as const } : old) : [...banks, { ...b, source: 'local' as const }];
-        setBanks(nb); setIsBankFormOpen(false); if (user?.accessToken && sid) saveBanksToSheet(user.accessToken, sid, nb);
-      }} onCancel={() => setIsBankFormOpen(false)} />}
-      
-      {isSyncing && <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900/90 text-white px-5 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2 z-50 animate-in fade-in"><RefreshCw size={14} className="animate-spin text-emerald-400" /><span className="text-[10px] font-black uppercase tracking-widest">Cloud Sync...</span></div>}
     </div>
   );
 };
