@@ -29,6 +29,8 @@ import { GoogleGenAI, Type } from "@google/genai";
 const DEFAULT_CLIENT_ID = '999301723526-fss4uphevi3q781oo58vv5jcm2umopbr.apps.googleusercontent.com';
 const STORAGE_KEY = 'yieldmaster_user_session';
 
+type AppSection = 'finanzas' | 'bancos' | 'cajeros' | 'comunicacion';
+
 const App: React.FC = () => {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [clientId, setClientId] = useState<string>(DEFAULT_CLIENT_ID);
@@ -38,8 +40,8 @@ const App: React.FC = () => {
   const [sid, setSid] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [showConfig, setShowConfig] = useState(false);
-  const [showAtms, setShowAtms] = useState(false);
   const [showInbox, setShowInbox] = useState(false);
+  const [activeSection, setActiveSection] = useState<AppSection>('finanzas');
   
   // Chat States
   const [showChatModal, setShowChatModal] = useState(false);
@@ -400,92 +402,131 @@ const App: React.FC = () => {
 
       {/* Main Content */}
       <main className="p-4 space-y-6">
-        <BalanceCard 
-          pesos={pesosBalance} 
-          usd={usdBalance} 
-          onUpdate={handleUpdateBalance} 
-          onScanClick={startCamera} 
-        />
-
-        <MoneyMarketSimulator />
-
-        <div className="flex gap-2 mb-4 overflow-x-auto pb-2 scrollbar-hide">
-          <button 
-            onClick={() => setChartCurrency(chartCurrency === 'ARS' ? 'USD' : 'ARS')}
-            className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${chartCurrency === 'ARS' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'bg-emerald-600 text-white shadow-lg shadow-emerald-100'}`}
-          >
-            VER EN {chartCurrency === 'ARS' ? 'USD' : 'ARS'}
-          </button>
-          <button 
-            onClick={handleFetchRates}
-            className="px-4 py-2 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-lg shadow-slate-200"
-          >
-            <Sparkles size={12} /> Sugerencias IA
-          </button>
-          <button 
-            onClick={async () => {
-              setIsLoadingSpaces(true);
-              setShowChatModal(true);
-              try {
-                const spaces = await fetchChatSpaces(user.accessToken!);
-                setChatSpaces(spaces);
-              } catch (e) { setAuthError("Error cargando chats."); } finally { setIsLoadingSpaces(false); }
-            }}
-            className="px-4 py-2 bg-white border border-slate-100 text-slate-600 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-sm"
-          >
-            <Send size={12} /> Enviar Reporte
-          </button>
+        <div className="bg-white rounded-3xl p-3 border border-slate-100 shadow-sm">
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-2 pb-2">Subsecciones</p>
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={() => setActiveSection('finanzas')} className={`px-3 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${activeSection === 'finanzas' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-100' : 'bg-slate-100 text-slate-500'}`}>Finanzas Personales</button>
+            <button onClick={() => setActiveSection('bancos')} className={`px-3 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${activeSection === 'bancos' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-100' : 'bg-slate-100 text-slate-500'}`}>Bancos y Tasas</button>
+            <button onClick={() => setActiveSection('cajeros')} className={`px-3 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${activeSection === 'cajeros' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-100' : 'bg-slate-100 text-slate-500'}`}>Cajeros y Beneficios</button>
+            <button onClick={() => setActiveSection('comunicacion')} className={`px-3 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${activeSection === 'comunicacion' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-100' : 'bg-slate-100 text-slate-500'}`}>Comunicaciones</button>
+          </div>
         </div>
 
-        <GrowthChart 
-          data={calculationData.chartData}
-          currency={chartCurrency}
-          totalGain={calculationData.totalGain}
-          comparisonTotalGain={calculationData.comparisonTotalGain}
-          potentialBankName={banks.find(b => b.id === selectedBankId)?.name}
-          currentBankName={banks.find(b => b.id === currentBankId)?.name}
-          onAddCalendarEvent={handleAddCalendarEvent}
-          isAddingEvent={isAddingEvent}
-        />
+        {activeSection === 'finanzas' && (
+          <>
+            <BalanceCard 
+              pesos={pesosBalance} 
+              usd={usdBalance} 
+              onUpdate={handleUpdateBalance} 
+              onScanClick={startCamera} 
+            />
 
-        <BankTable 
-          banks={sortedBanks}
-          selectedBankId={selectedBankId}
-          currentBankId={currentBankId}
-          sortConfig={sortConfig}
-          publicSources={publicSources}
-          lastPublicUpdate={lastPublicUpdate}
-          onSelect={setSelectedBankId}
-          onSetCurrent={setCurrentBankId}
-          onSort={(key) => setSortConfig(prev => prev?.key === key ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' } : { key, direction: 'desc' })}
-          onAdd={() => setIsBankFormOpen(true)}
-          onEdit={(b) => { setEditingBank(b); setIsBankFormOpen(true); }}
-          onDelete={(id) => {
-            const up = banks.filter(b => b.id !== id);
-            setBanks(up);
-            if (user.accessToken && sid) saveBanksToSheet(user.accessToken, sid, up);
-          }}
-          onFetchPublic={handleFetchRates}
-          isFetching={isFetchingRates}
-        />
+            <MoneyMarketSimulator />
 
-        {showAtms && <ATMMap />}
-        
-        {discountsData && (
-          <BankDiscounts 
-            data={discountsData.promotions} 
-            sources={discountsData.sources} 
-            timestamp={discountsData.timestamp} 
-          />
+            <button 
+              onClick={() => setChartCurrency(chartCurrency === 'ARS' ? 'USD' : 'ARS')}
+              className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${chartCurrency === 'ARS' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'bg-emerald-600 text-white shadow-lg shadow-emerald-100'}`}
+            >
+              VER EN {chartCurrency === 'ARS' ? 'USD' : 'ARS'}
+            </button>
+
+            <GrowthChart 
+              data={calculationData.chartData}
+              currency={chartCurrency}
+              totalGain={calculationData.totalGain}
+              comparisonTotalGain={calculationData.comparisonTotalGain}
+              potentialBankName={banks.find(b => b.id === selectedBankId)?.name}
+              currentBankName={banks.find(b => b.id === currentBankId)?.name}
+              onAddCalendarEvent={handleAddCalendarEvent}
+              isAddingEvent={isAddingEvent}
+            />
+          </>
+        )}
+
+        {activeSection === 'bancos' && (
+          <>
+            <div className="flex gap-2 mb-2 overflow-x-auto pb-2 scrollbar-hide">
+              <button 
+                onClick={handleFetchRates}
+                className="px-4 py-2 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-lg shadow-slate-200"
+              >
+                <Sparkles size={12} /> Sugerencias IA
+              </button>
+            </div>
+
+            <BankTable 
+              banks={sortedBanks}
+              selectedBankId={selectedBankId}
+              currentBankId={currentBankId}
+              sortConfig={sortConfig}
+              publicSources={publicSources}
+              lastPublicUpdate={lastPublicUpdate}
+              onSelect={setSelectedBankId}
+              onSetCurrent={setCurrentBankId}
+              onSort={(key) => setSortConfig(prev => prev?.key === key ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' } : { key, direction: 'desc' })}
+              onAdd={() => setIsBankFormOpen(true)}
+              onEdit={(b) => { setEditingBank(b); setIsBankFormOpen(true); }}
+              onDelete={(id) => {
+                const up = banks.filter(b => b.id !== id);
+                setBanks(up);
+                if (user.accessToken && sid) saveBanksToSheet(user.accessToken, sid, up);
+              }}
+              onFetchPublic={handleFetchRates}
+              isFetching={isFetchingRates}
+            />
+          </>
+        )}
+
+        {activeSection === 'cajeros' && (
+          <>
+            <div className="flex gap-2">
+              <button 
+                onClick={handleSearchDiscounts}
+                className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${isFetchingDiscounts ? 'bg-amber-500 text-white animate-pulse' : 'bg-slate-900 text-white'}`}
+              >
+                <Ticket size={12} /> Buscar descuentos
+              </button>
+            </div>
+            <ATMMap />
+            {discountsData && (
+              <BankDiscounts 
+                data={discountsData.promotions} 
+                sources={discountsData.sources} 
+                timestamp={discountsData.timestamp} 
+              />
+            )}
+          </>
+        )}
+
+        {activeSection === 'comunicacion' && (
+          <div className="bg-white border border-slate-100 rounded-3xl p-4 space-y-3 shadow-sm">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Integraciones</p>
+            <button 
+              onClick={async () => {
+                setIsLoadingSpaces(true);
+                setShowChatModal(true);
+                try {
+                  const spaces = await fetchChatSpaces(user.accessToken!);
+                  setChatSpaces(spaces);
+                } catch (e) { setAuthError("Error cargando chats."); } finally { setIsLoadingSpaces(false); }
+              }}
+              className="w-full px-4 py-3 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 shadow-lg shadow-slate-200"
+            >
+              <Send size={12} /> Enviar reporte a Google Chat
+            </button>
+            <button onClick={() => setShowInbox(true)} className="w-full px-4 py-3 bg-white border border-slate-200 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2">
+              <Bell size={12} /> Ver Inbox bancario
+            </button>
+          </div>
         )}
       </main>
 
       {/* Bottom Nav */}
       <nav className="fixed bottom-6 left-4 right-4 bg-slate-900/90 backdrop-blur-2xl rounded-[32px] p-2 flex justify-around items-center shadow-2xl z-40 border border-white/10">
-        <button onClick={() => { setShowAtms(false); setDiscountsData(null); }} className="p-4 text-emerald-400"><TrendingUp size={24} /></button>
-        <button onClick={() => setShowAtms(!showAtms)} className={`p-4 transition-all ${showAtms ? 'text-blue-400 scale-110' : 'text-slate-500'}`}><MapIcon size={24} /></button>
-        <button onClick={handleSearchDiscounts} className={`p-4 transition-all ${isFetchingDiscounts ? 'text-amber-400 animate-pulse' : 'text-slate-500'}`}><Ticket size={24} /></button>
-        <button onClick={() => setShowInbox(true)} className="p-4 text-slate-500"><Bell size={24} /></button>
+        <button onClick={() => setActiveSection('finanzas')} className={`p-4 transition-all ${activeSection === 'finanzas' ? 'text-emerald-400 scale-110' : 'text-slate-500'}`}><TrendingUp size={24} /></button>
+        <button onClick={() => setActiveSection('bancos')} className={`p-4 transition-all ${activeSection === 'bancos' ? 'text-blue-400 scale-110' : 'text-slate-500'}`}><Layers size={24} /></button>
+        <button onClick={() => setActiveSection('cajeros')} className={`p-4 transition-all ${activeSection === 'cajeros' ? 'text-amber-400 scale-110' : 'text-slate-500'}`}><MapIcon size={24} /></button>
+        <button onClick={() => setActiveSection('comunicacion')} className={`p-4 transition-all ${activeSection === 'comunicacion' ? 'text-violet-400 scale-110' : 'text-slate-500'}`}><Bell size={24} /></button>
       </nav>
 
       {/* Modals */}
