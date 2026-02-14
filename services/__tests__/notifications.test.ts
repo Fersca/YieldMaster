@@ -62,17 +62,20 @@ describe('notifications service', () => {
   });
 
   it('creates notification with default icon and custom options', () => {
-    const NotificationMock = vi.fn(function NotificationCtor() {});
+    const NotificationMock = vi.fn(function NotificationCtor(_title?: string, _options?: NotificationOptions) {});
     Object.assign(NotificationMock, { permission: 'granted', requestPermission: vi.fn() });
     Object.defineProperty(window, 'Notification', { value: NotificationMock, configurable: true });
 
     sendLocalNotification('title', { body: 'body text' });
 
     expect(NotificationMock).toHaveBeenCalledTimes(1);
-    const [title, options] = NotificationMock.mock.calls[0];
+    const firstCall = NotificationMock.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    const [title, options] = firstCall;
+    expect(options).toBeDefined();
     expect(title).toBe('title');
-    expect(options.body).toBe('body text');
-    expect(options.icon).toContain('flaticon.com');
+    expect(options!.body).toBe('body text');
+    expect(options!.icon).toContain('flaticon.com');
   });
 
   it('swallows errors when Notification constructor throws', () => {
