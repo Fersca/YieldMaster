@@ -8,6 +8,7 @@ import { GrowthChart } from './components/GrowthChart';
 import { ATMMap } from './components/ATMMap';
 import { BankDiscounts } from './components/BankDiscounts';
 import { BankInbox } from './components/BankInbox';
+import { MoneyMarketSimulator } from './components/MoneyMarketSimulator';
 import { 
   LogIn, TrendingUp, RefreshCw, Layers, Map as MapIcon, 
   Settings, X, Sparkles, Cloud, Ticket, Loader2, Bell, 
@@ -405,6 +406,8 @@ const App: React.FC = () => {
           onUpdate={handleUpdateBalance} 
           onScanClick={startCamera} 
         />
+
+        <MoneyMarketSimulator />
 
         <div className="flex gap-2 mb-4 overflow-x-auto pb-2 scrollbar-hide">
           <button 
